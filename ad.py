@@ -10,6 +10,7 @@ from TSB_UAD.models.feature import Window
 from TSB_UAD.models.iforest import IForest
 from TSB_UAD.models.sand import SAND
 from TSB_UAD.models.matrix_profile import MatrixProfile
+from StreamingBatchIForest import StreamingBatchIForest
 
 public_root = "./data/"
 selected_domains = ['NASA-MSL', 'IOPS', 'Genesis', 'YAHOO']
@@ -125,3 +126,20 @@ score = clf.decision_scores_
 score = MinMaxScaler(feature_range=(0,1)).fit_transform(score.reshape(-1,1)).ravel()
 plotFig(data, label, score, slidingWindow, fileName="Norm-"+str(norm)+"-"+modelName, modelName=modelName)
 plt.savefig("Norm-"+str(norm)+"-"+modelName, dpi=300, bbox_inches='tight')
+
+
+### Online 2 - IForest
+sb_if = StreamingBatchIForest(
+    batch_frac=0.1,
+    overlap=10,
+    n_clusters=4,
+    state_size=None,       
+    tabpfn_device='cpu'
+)
+scores = sb_if.process(data)
+
+# Plot results
+sliding = find_length(data)
+plotFig(data, label, scores, sliding,
+        fileName='Stream_IForest', modelName='StreamIForest')
+plt.savefig('Stream_IForest.png', dpi=300, bbox_inches='tight')
