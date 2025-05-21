@@ -39,9 +39,9 @@ class StreamingBatchIForest:
         indices = list(range(0, N, B)) + [N]
         return [series[indices[i]:indices[i+1]] for i in range(len(indices)-1)]
 
-    def extract_subsequences(self, batch, t0=0):
+    def extract_subsequences(self, batch, t0=0, overlap=None):
         L = self.window_length or find_length(batch)
-        step = self.overlap
+        step = overlap or self.overlap
         subseqs, timestamps = [], []
         for start in range(0, len(batch)-L+1, step):
             subseqs.append(batch[start:start+L])
@@ -124,12 +124,19 @@ class StreamingBatchIForest:
                 clf.fit(subseqs_cluster)
                 
                 # Get decision scores for all the subsequence of the current batch
+
                 sc_all = MinMaxScaler().fit_transform(
-                    clf.decision_function(subseqs).reshape(-1,1)
+                    clf.decision_function(self.extract_subsequences(batch, t0=offset, overlap=1)).reshape(-1,1)
                 ).ravel()
 
                 cluster_scores[idx] = sc_all
 
+
+            
+            # TODO: fix the following to adapt to the modified scores length
+            # WHY: len(sc_all) is now batsch_size - window_length + 1
+            # HOW: pad the last scores with zeros or the last score
+             
             # Map subseq scores back to the batch's time points
             L = self.window_length or find_length(batch)
             point_scores = np.zeros(len(batch))
