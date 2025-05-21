@@ -138,7 +138,6 @@ sb_if = StreamingBatchIForest(
 )
 scores = sb_if.process(data)
 
-# Plot results
 sliding = find_length(data)
 plotFig(data, label, scores, sliding,
         fileName='Stream_IForest', modelName='StreamIForest')
