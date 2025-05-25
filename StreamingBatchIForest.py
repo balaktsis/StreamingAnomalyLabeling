@@ -9,8 +9,10 @@ from sklearn.metrics import pairwise_distances
 from TSB_UAD.utils.visualisation import plotFig
 from TSB_UAD.utils.slidingWindows import find_length
 from TSB_UAD.models.iforest import IForest
-from tabpfn import TabPFNClassifier
+from tabpfn import TabPFNClassifier, TabPFNRegressor
 from tabpfn_extensions.embedding import TabPFNEmbedding
+
+import pprint
 
 
 class StreamingBatchIForest:
@@ -29,7 +31,8 @@ class StreamingBatchIForest:
         self.random_state = random_state
         self.state_size = state_size
         self.state_subseq = []  # [(timestamp, subseq)]
-        self.tabpfn = TabPFNClassifier(n_estimators=1, random_state=42, device=tabpfn_device)
+        self.tabpfn_clf = TabPFNClassifier(n_estimators=1, random_state=self.random_state, device=tabpfn_device)
+        self.tabpfn_reg = TabPFNRegressor(n_estimators=1, random_state=self.random_state, device=tabpfn_device)
 
     def split_batches(self, series):
         N = len(series)
@@ -48,20 +51,30 @@ class StreamingBatchIForest:
             timestamps.append(t0 + start + L//2)
         return np.array(subseqs), np.array(timestamps)
 
-    def embed(self, subseqs):
+    def embed(self, subseqs, debug=True):
+        # todo remove debug flag before running final experiments (we will need Kaggle/Colab)
         X_train = np.array(subseqs)
+        y_train = X_train[:, -1] # assuming last column is the target variable
         X_train = X_train[:, :-1]
-        y_train = X_train[:, -1]   
         embedding_extractor = TabPFNEmbedding(
-            tabpfn_clf=self.tabpfn,
+            # tabpfn_clf=self.tabpfn_clf,
+            tabpfn_reg=self.tabpfn_reg, # we only need a regressor since time series are numerical
             n_fold=0
         )
-        embeddings = embedding_extractor.get_embeddings(
-            X_train=X_train,
-            y_train=y_train,
-            X_test=None,
-            data_source="train",
-        )
+        print(f"Extracting embeddings for {len(X_train)} subsequences with shape {X_train.shape}")
+        embeddings = None
+        if debug:
+            # Add a debug mode to make sure that the rest rationale is correct
+            print(f"Debug mode is set to True. Embeddings are randomly generated.")
+            np.random.seed(self.random_state)
+            embeddings = np.random.randn(len(X_train), 128)
+        else:
+            embeddings = embedding_extractor.get_embeddings(
+                X_train=X_train,
+                y_train=y_train,
+                X=X_train,
+                data_source="train",
+            )
         return embeddings
 
 
@@ -104,14 +117,9 @@ class StreamingBatchIForest:
                 n_clusters=self.n_clusters,
                 random_state=self.random_state
             ).fit_predict(embeddings)
-            # Cluster embeddings
-            labels = KMeans(
-                n_clusters=self.n_clusters,
-                random_state=self.random_state
-            ).fit_predict(embeddings)
 
             # Per-cluster IForest
-            cluster_scores = np.zeros(len(subseqs))
+            cluster_scores = []
             sizes, ages = {}, {}
             for c in range(self.n_clusters):
                 idx = np.where(labels == c)[0]
@@ -119,18 +127,43 @@ class StreamingBatchIForest:
                 ages[c]  = np.median(combined_times[idx])
 
                 # Fit IForest on all subsequences in this cluster
-                subseqs_cluster = np.stack([embedding_pairs[idx][1]])
+                subseqs_cluster = np.stack([embedding_pairs[i][1] for i in idx])
+                print(f"Fitting IForest on cluster {c} with {len(subseqs_cluster)} subsequences")
+
                 clf = IForest(n_jobs=1)
                 clf.fit(subseqs_cluster)
-                
-                # Get decision scores for all the subsequence of the current batch
+                print(f"IForest fitted. Attempting inference on all subsequences of the current batch.")
+                print(f"Shape of all subsequences in the batch: {subseqs.shape}")
 
+                # Get decision scores for all the subsequences of the current batch (and not only this cluster)
                 sc_all = MinMaxScaler().fit_transform(
-                    clf.decision_function(self.extract_subsequences(batch, t0=offset, overlap=1)).reshape(-1,1)
+                    # using the private attribute `detector_` because `check_fitted` seems broken in TSB's IForest
+                    # When using `clf.decision_function(subseqs)`, it raises an error that the model is not fitted
+                    clf.detector_.decision_function(subseqs).reshape(-1, 1)
                 ).ravel()
 
-                cluster_scores[idx] = sc_all
+                cluster_scores.append(sc_all.tolist())
 
+            weights = {c: sizes[c] * ages[c] for c in sizes}
+            sum_of_weights = sum(weights.values())
+
+            assert(sum_of_weights > 0), "Something is wrong here. The sum of weights of all clusters is zero."
+            # Normalize cluster weights so that they sum to 1
+            weights = {c: w / sum_of_weights for c, w in weights.items()}
+
+            # aggregate the scores for each subsequence. The anomaly score of each subsequence is
+            # the anomaly score that each model/cluster produced for the subsequence, weighted by the cluster's weight
+            agg_subseq_scores = np.zeros(subseqs.shape[0], dtype=float)
+            for subseq_idx in range(len(subseqs)):
+                for scores in cluster_scores:
+                    agg_subseq_scores[subseq_idx] += scores[subseq_idx] * weights[labels[subseq_idx]]
+
+            print(f"Anomaly score for each subsequence was successfully computed.")
+            pprint.pp(agg_subseq_scores)
+            pprint.pp(agg_subseq_scores.shape)
+            exit()
+            # Unsure about the padding logic below so I stop here for now
+            # `agg_subseq_scores` is an array with shape (len(subseqs),) containing the anomaly scores for each subsequence
 
             
             # TODO: fix the following to adapt to the modified scores length
