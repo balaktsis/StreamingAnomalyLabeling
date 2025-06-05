@@ -10,7 +10,7 @@ from TSB_UAD.models.feature import Window
 from TSB_UAD.models.iforest import IForest
 from TSB_UAD.models.sand import SAND
 from TSB_UAD.models.matrix_profile import MatrixProfile
-from StreamingBatchIForest import StreamingBatchIForest
+from StreamingDetector import StreamingDetector
 
 
 public_root = "./data/"
@@ -185,7 +185,8 @@ plt.savefig("Norm-"+str(norm)+"-"+modelName, dpi=300, bbox_inches='tight')
 #     batch_frac=0.1,
 #     overlap=10,
 #     n_clusters=4,
-#     state_size=None,       
+#     state_size=None,   
+#     model=iforest,    
 #     tabpfn_device='cpu'
 # )
 # scores = sb_if.process(data)

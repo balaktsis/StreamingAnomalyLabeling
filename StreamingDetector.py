@@ -5,8 +5,7 @@ import matplotlib.pyplot as plt
 import math
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
-from sklearn.metrics import pairwise_distances
-from TSB_UAD.utils.visualisation import plotFig
+from TSB_UAD.models.matrix_profile import MatrixProfile
 from TSB_UAD.utils.slidingWindows import find_length
 from TSB_UAD.models.iforest import IForest
 from tabpfn import TabPFNClassifier, TabPFNRegressor
@@ -15,7 +14,7 @@ from tabpfn_extensions.embedding import TabPFNEmbedding
 import pprint
 
 
-class StreamingBatchIForest:
+class StreamingDetector:
     def __init__(self,
                  batch_frac=0.1,
                  window_length=None,
@@ -23,8 +22,10 @@ class StreamingBatchIForest:
                  n_clusters=4,
                  state_size=None,
                  random_state=42,
+                 model=None,
                  tabpfn_device='cpu'):
         self.batch_frac = batch_frac
+        self.model = model
         self.window_length = window_length
         self.overlap = overlap
         self.n_clusters = n_clusters
@@ -118,7 +119,7 @@ class StreamingBatchIForest:
                 random_state=self.random_state
             ).fit_predict(embeddings)
 
-            # Per-cluster IForest
+            # Per-cluster anomaly detection
             cluster_scores = []
             sizes, ages = {}, {}
             for c in range(self.n_clusters):
@@ -126,18 +127,25 @@ class StreamingBatchIForest:
                 sizes[c] = len(idx)
                 ages[c]  = np.median(combined_times[idx])
 
-                # Fit IForest on all subsequences in this cluster
+                # Fit anomaly detection on all subsequences in this cluster
                 subseqs_cluster = np.stack([embedding_pairs[i][1] for i in idx])
-                print(f"Fitting IForest on cluster {c} with {len(subseqs_cluster)} subsequences")
-
-                clf = IForest(n_jobs=1)
+                print(f"Fitting anomaly detection on cluster {c} with {len(subseqs_cluster)} subsequences")
+                
+                if self.model == "iforest":
+                    clf = IForest(n_jobs=1)
+                elif self.model == "matrixprofile":
+                    window = find_length(subseqs_cluster)
+                    clf = MatrixProfile(window=window)
+                else:
+                    raise ValueError(f"Unknown model: {self.model}. Supported models are 'iforest' and 'matrixprofile'.")
+                
                 clf.fit(subseqs_cluster)
-                print(f"IForest fitted. Attempting inference on all subsequences of the current batch.")
+                print(f"Model fitted. Attempting inference on all subsequences of the current batch.")
                 print(f"Shape of all subsequences in the batch: {subseqs.shape}")
 
                 # Get decision scores for all the subsequences of the current batch (and not only this cluster)
                 sc_all = MinMaxScaler().fit_transform(
-                    # using the private attribute `detector_` because `check_fitted` seems broken in TSB's IForest
+                    # using the private attribute `detector_` because `check_fitted` seems broken in TSB's model
                     # When using `clf.decision_function(subseqs)`, it raises an error that the model is not fitted
                     clf.detector_.decision_function(subseqs).reshape(-1, 1)
                 ).ravel()
