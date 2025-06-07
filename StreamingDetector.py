@@ -158,17 +158,24 @@ class StreamingDetector:
 
                 # Fit anomaly detection on all subsequences in this cluster
                 subseqs_cluster = np.stack([combined_seqs[i] for i in idx])
+                # print(f"Shape of subsequences in cluster {c+1}: {subseqs_cluster.shape}")
+                # print(f"Shape of raveled subsequences in cluster {c+1}: {subseqs_cluster.ravel().shape}")
+                # exit()
                 print(f"Fitting anomaly detection on cluster {c+1} with {len(subseqs_cluster)} subsequences")
 
                 if self.model == "iforest":
                     clf = IForest(n_jobs=1)
+                    clf.fit(subseqs_cluster)
+                    raw_scores = clf.detector_.decision_function(subseqs)
                 elif self.model == "matrixprofile":
-                    window = find_length(subseqs_cluster)
-                    clf = MatrixProfile(window=window)
+                    # window = find_length(subseqs_cluster)
+                    print(f"Using sliding window length: {slidingWindow}")
+                    clf = MatrixProfile(window=slidingWindow)
+                    clf.fit(batch)
+                    raw_scores = clf.decision_scores_
                 else:
                     raise ValueError(f"Unknown model: {self.model}. Supported models are 'iforest' and 'matrixprofile'.")
-                
-                clf.fit(subseqs_cluster)
+
                 print(f"Model fitted. Attempting inference on all subsequences of the current batch.")
                 print(f"Shape of all subsequences in the batch: {subseqs.shape}")
 
@@ -176,7 +183,7 @@ class StreamingDetector:
                 scores_for_current_batch_from_submodel = MinMaxScaler().fit_transform(
                     # using the private attribute `detector_` because `check_fitted` seems broken in TSB's model
                     # When using `clf.decision_function(subseqs)`, it raises an error that the model is not fitted
-                    clf.detector_.decision_function(subseqs).reshape(-1, 1)
+                    raw_scores.reshape(-1, 1)
                 ).ravel()
 
                 scores_for_current_batch_from_all_models.append(scores_for_current_batch_from_submodel.tolist())
