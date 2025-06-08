@@ -11,8 +11,11 @@ from TSB_UAD.models.iforest import IForest
 from TSB_UAD.models.feature import Window
 from tabpfn import TabPFNClassifier, TabPFNRegressor
 from tabpfn_extensions.embedding import TabPFNEmbedding
+from sklearn.preprocessing import StandardScaler
 
-import pprint
+
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 
 class StreamingDetector:
@@ -39,6 +42,7 @@ class StreamingDetector:
     def split_batches(self, series):
         N = len(series)
         B = int(math.floor(self.batch_frac * N))
+        B = min(1000, B) # todo increase limit to 10K for final experiments
         if self.state_size is None:
             self.state_size = B
         indices = list(range(0, N, B)) + [N]
@@ -61,7 +65,7 @@ class StreamingDetector:
         normalized_embeddings = scaler.fit_transform(embeddings.T).T  # Transpose to normalize every row
         return normalized_embeddings
 
-    def embed(self, subseqs, debug=True):
+    def embed(self, subseqs, debug=False):
         # todo remove debug flag before running final experiments (we will need Kaggle/Colab)
         X_train = np.array(subseqs)
         y_train = X_train[:, -1] # assuming last column is the target variable
@@ -71,7 +75,7 @@ class StreamingDetector:
             tabpfn_reg=self.tabpfn_reg, # we only need a regressor since time series are numerical
             n_fold=0
         )
-        print(f"Extracting embeddings for {len(X_train)} subsequences with shape {X_train.shape}")
+        # print(f"Extracting embeddings for {len(X_train)} subsequences with shape {X_train.shape}")
         embeddings = None
         if debug:
             # Add a debug mode to make sure that the rest rationale is correct
@@ -84,7 +88,8 @@ class StreamingDetector:
                 y_train=y_train,
                 X=X_train,
                 data_source="train",
-            )
+            )[0]
+            print(f"Extracted Embeddings shape: {embeddings.shape}")
 
         return self.z_normalize(embeddings)
 
@@ -107,12 +112,13 @@ class StreamingDetector:
             self.state_subseq = [self.state_subseq[i] for i in idx_keep]
 
 
-    def process(self, series):
+    def process(self, series, labels=None):
         all_scores, offset = [], 0
 
         print(f"Starting processing of the time series with length {len(series)} and shape {np.array(series).shape}.")
 
         batches = self.split_batches(series)
+        labels_per_batch = self.split_batches(labels)
         slidingWindow = find_length(batches[0])
 
         # I had to set the sliding window length to the first batch's length
@@ -122,24 +128,56 @@ class StreamingDetector:
         self.window_length = slidingWindow
 
         for batch_idx, batch in enumerate(batches):
-            print()
-            print(f"Processing batch {batch_idx + 1}/{len(batches)} with {len(batch)} data points.")
-            print(f"Processing batch with {len(batch)} data points and shape {np.array(batch).shape}.")
+            # print()
+            # print(f"Processing batch {batch_idx + 1}/{len(batches)} with {len(batch)} data points.")
+            # print(f"Processing batch with {len(batch)} data points and shape {np.array(batch).shape}.")
             # Extract new subsequences
             subseqs, times = self.extract_subsequences(batch, t0=offset, overlap=1)
-            X_data = Window(window=slidingWindow).convert(batch).to_numpy()
-            print(f"Extracted {len(subseqs)} subsequences with shape {subseqs.shape}.")
-            print(f"Extracted {len(X_data)} subsequences from the batch with shape {X_data.shape}.")
+            labels_per_subsequence, _ = self.extract_subsequences(labels_per_batch[batch_idx], t0=offset, overlap=1)
+            colors = ['blue' if sum(l) == 0 else 'red' for l in labels_per_subsequence]
+            # print(labels_per_subsequence)
+            # exit()
+            # X_data = Window(window=slidingWindow).convert(batch).to_numpy()
+            # print(f"Extracted {len(subseqs)} subsequences with shape {subseqs.shape}.")
+            # print(f"Extracted {len(X_data)} subsequences from the batch with shape {X_data.shape}.")
 
-            print(f"Current state shape: {len(self.state_subseq)} x {len(self.state_subseq[0][1]) if self.state_subseq else 0}.")
+            # print(f"Current state shape: {len(self.state_subseq)} x {len(self.state_subseq[0][1]) if self.state_subseq else 0}.")
             # Combine with retained state
             combined = self.state_subseq + list(zip(times.tolist(), subseqs))
-            print(f"Combined subsequences with retained state. Total subsequences: {len(combined)}.")
+            # print(f"Combined subsequences with retained state. Total subsequences: {len(combined)}.")
             combined_times = np.array([t for t, _ in combined])
             combined_seqs  = np.stack([s for _, s in combined])
 
+            raw_data = np.concatenate((np.array(times).reshape(-1, 1), subseqs), axis=1)
+            # print(raw_data[0])
+            # lower_dim = PCA(n_components=2)
+            lower_dim = TSNE(random_state=22, max_iter=10000, metric="cosine")
+            scaler = StandardScaler()
+
+            # Fit and transform
+            raw_data_2d = scaler.fit_transform(
+                lower_dim.fit_transform(scaler.fit_transform(raw_data)),
+            )
+
             # Embed subsequences and preserve mapping to original subsequences
-            embeddings = self.embed(combined_seqs)
+            embeddings = self.embed(np.concatenate((subseqs, np.array(times).reshape(-1, 1)), axis=1))
+            embeddings_2d = scaler.fit_transform(
+                lower_dim.fit_transform(scaler.fit_transform(embeddings)),
+            )
+
+            plt.figure(figsize=(12, 6))
+
+            plt.subplot(1, 2, 1)
+            plt.scatter(raw_data_2d[:, 0], raw_data_2d[:, 1], c=colors, label='Raw Data', alpha=0.4)
+            plt.title('Raw Data Embeddings')
+
+            plt.subplot(1, 2, 2)
+            plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, label='Embedded Data', alpha=0.4)
+            plt.title('Embedded Data')
+
+            plt.show()
+
+            plt.close()
 
             # Cluster with KMeans on normalized embeddings (equivalent to cosine k-means)
             # Note that embed() returns already z-normalized embeddings
@@ -161,7 +199,7 @@ class StreamingDetector:
                 # print(f"Shape of subsequences in cluster {c+1}: {subseqs_cluster.shape}")
                 # print(f"Shape of raveled subsequences in cluster {c+1}: {subseqs_cluster.ravel().shape}")
                 # exit()
-                print(f"Fitting anomaly detection on cluster {c+1} with {len(subseqs_cluster)} subsequences")
+                # print(f"Fitting anomaly detection on cluster {c+1} with {len(subseqs_cluster)} subsequences")
 
                 if self.model == "iforest":
                     clf = IForest(n_jobs=1)
@@ -169,15 +207,15 @@ class StreamingDetector:
                     raw_scores = clf.detector_.decision_function(subseqs)
                 elif self.model == "matrixprofile":
                     # window = find_length(subseqs_cluster)
-                    print(f"Using sliding window length: {slidingWindow}")
+                    # print(f"Using sliding window length: {slidingWindow}")
                     clf = MatrixProfile(window=slidingWindow)
                     clf.fit(batch)
                     raw_scores = clf.decision_scores_
                 else:
                     raise ValueError(f"Unknown model: {self.model}. Supported models are 'iforest' and 'matrixprofile'.")
 
-                print(f"Model fitted. Attempting inference on all subsequences of the current batch.")
-                print(f"Shape of all subsequences in the batch: {subseqs.shape}")
+                # print(f"Model fitted. Attempting inference on all subsequences of the current batch.")
+                # print(f"Shape of all subsequences in the batch: {subseqs.shape}")
 
                 # Get decision scores for all the subsequences of the current batch (and not only this cluster)
                 scores_for_current_batch_from_submodel = MinMaxScaler().fit_transform(
@@ -201,51 +239,13 @@ class StreamingDetector:
             for subseq_idx in range(len(subseqs)):
                 for scores in scores_for_current_batch_from_all_models:
                     agg_subseq_scores[subseq_idx] += scores[subseq_idx] * weights[labels[subseq_idx]]
-            print(f"Anomaly score for each subsequence was successfully computed.")
-            print(f"Scores before padding: {agg_subseq_scores.shape}.")
-            print(f"Attempting to add padding to the scores if necessary.")
+            # print(f"Anomaly score for each subsequence was successfully computed.")
+            # print(f"Scores before padding: {agg_subseq_scores.shape}.")
+            # print(f"Attempting to add padding to the scores if necessary.")
             sliding_window = self.window_length or find_length(batch)
             agg_subseq_scores = np.array([agg_subseq_scores[0]]*math.ceil((sliding_window-1)/2) + list(agg_subseq_scores) + [agg_subseq_scores[-1]]*((sliding_window-1)//2))
-            print(f"Scores after padding: {agg_subseq_scores.shape}.")
+            # print(f"Scores after padding: {agg_subseq_scores.shape}.")
             all_scores.append(agg_subseq_scores)
-
-
-            # pprint.pp(agg_subseq_scores)
-            # pprint.pp(agg_subseq_scores.shape)
-            # exit()
-            # Unsure about the padding logic below so I stop here for now
-            # `agg_subseq_scores` is an array with shape (len(subseqs),) containing the anomaly scores for each subsequence
-
-            
-            # TODO: fix the following to adapt to the modified scores length
-            # WHY: len(sc_all) is now batsch_size - window_length + 1
-            # HOW: pad the last scores with zeros or the last score
-             
-            # Map subseq scores back to the batch's time points
-            # L = self.window_length or find_length(batch)
-            # point_scores = np.zeros(len(batch))
-            # weights = {c: sizes[c] * ages[c] for c in sizes}
-            # weight_sums = np.zeros(len(batch))
-            #
-            # base = len(self.state_subseq)  # new subsequences start from this index
-            #
-            # for j, t in enumerate(times):
-            #     c = labels[base + j]
-            #     start = max(0, int((t - offset) - L // 2))
-            #     end = min(len(batch), start + L)
-            #     weight = weights[c]
-            #
-            #     # Spread the weighted score over the data points in the subsequence
-            #     point_scores[start:end] += scores_for_current_batch_from_all_models[base + j] * weight
-            #     weight_sums[start:end] += weight
-            #
-            # # Normalize by accumulated weight per point to get final anomaly score per point
-            # point_scores = np.divide(
-            #     point_scores,
-            #     weight_sums,
-            #     out=np.zeros_like(point_scores),
-            #     where=weight_sums != 0
-            # )
 
             # Update state and offset
             self.update_state(list(zip(times.tolist(), subseqs)))
