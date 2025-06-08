@@ -24,7 +24,7 @@ class StreamingDetector:
                  window_length=None,
                  overlap=10,
                  n_clusters=4,
-                 state_size=None,
+                 state_size=10000,
                  random_state=42,
                  model=None,
                  tabpfn_device='cpu'):
@@ -35,27 +35,30 @@ class StreamingDetector:
         self.n_clusters = n_clusters
         self.random_state = random_state
         self.state_size = state_size
-        self.state_subseq = []  # [(timestamp, subseq)]
+        self.state_subseq = []  # [(timestamp, running_indices, subseq, labels)]
         self.tabpfn_clf = TabPFNClassifier(n_estimators=1, random_state=self.random_state, device=tabpfn_device)
         self.tabpfn_reg = TabPFNRegressor(n_estimators=1, random_state=self.random_state, device=tabpfn_device)
 
     def split_batches(self, series):
         N = len(series)
         B = int(math.floor(self.batch_frac * N))
-        B = min(1000, B) # todo increase limit to 10K for final experiments
+        B = min(500, B) # todo increase limit to 10K for final experiments
         if self.state_size is None:
             self.state_size = B
         indices = list(range(0, N, B)) + [N]
         return [series[indices[i]:indices[i+1]] for i in range(len(indices)-1)]
 
     def extract_subsequences(self, batch, t0=0, overlap=None):
+        # todo function needs docstrings; returns subsequences, timestamps and running indices
         L = self.window_length or find_length(batch)
         step = overlap or self.overlap
-        subseqs, timestamps = [], []
+        batch_indices = np.arange(len(batch)) + t0
+        subseqs, timestamps, running_indices = [], [], []
         for start in range(0, len(batch)-L+1, step):
             subseqs.append(batch[start:start+L])
+            running_indices.append(batch_indices[start:start+L])
             timestamps.append(t0 + start + L//2)
-        return np.array(subseqs), np.array(timestamps)
+        return np.array(subseqs), np.array(timestamps), np.array(running_indices)
 
     def z_normalize(self, embeddings):
         """Normalizes the embeddings to have zero mean and unit variance. Normalizes each row separately."""
@@ -92,6 +95,29 @@ class StreamingDetector:
             print(f"Extracted Embeddings shape: {embeddings.shape}")
 
         return self.z_normalize(embeddings)
+    
+
+    def get_times(self, combined_data):
+        return np.array([t for t, _, _, _ in combined_data], dtype=float)
+    
+    
+    def get_running_indices(self, combined_data):
+        return np.array([i for _, i, _, _ in combined_data], dtype=float)
+    
+    
+    def get_subsequences(self, combined_data):
+       return np.array([s for _, _, s, _ in combined_data], dtype=float)
+    
+    
+    def get_labels(self, combined_data):
+        return np.array([l for _, _, _, l in combined_data], dtype=float)
+    
+
+    def get_enriched_subsequences(self, combined_data):
+       return np.concatenate(
+           (self.get_running_indices(combined_data), self.get_subsequences(combined_data)),
+           axis=1
+       )
 
 
     def update_state(self, new_items):
@@ -99,7 +125,8 @@ class StreamingDetector:
 
         if len(self.state_subseq) > self.state_size:
             # Perform probabilistic sampling, giving higher weight to recent subsequences
-            times = np.array([t for t, _ in self.state_subseq], dtype=float)
+            # times = np.array([t for t, _, _ in self.state_subseq], dtype=float)
+            times = self.get_times(self.state_subseq)
             probs = times - times.min() + 1e-6  # Ensure positivity
             probs /= probs.sum()
 
@@ -111,73 +138,81 @@ class StreamingDetector:
             )
             self.state_subseq = [self.state_subseq[i] for i in idx_keep]
 
+    
+    def plot_raw_vs_latent_space_2D(self, raw_data, embeddings, labels_per_subsequence, batch_idx):
+        # lower_dim = PCA(n_components=2)
+        lower_dim = TSNE(random_state=22, max_iter=10000, metric="cosine")
+        scaler = StandardScaler()
+
+        # Fit and transform
+        raw_data_2d = scaler.fit_transform(
+            lower_dim.fit_transform(scaler.fit_transform(raw_data)),
+        )
+
+        embeddings_2d = scaler.fit_transform(
+            lower_dim.fit_transform(scaler.fit_transform(embeddings)),
+        )
+
+        plt.figure(figsize=(12, 6))
+        colors = ['dodgerblue' if sum(l) == 0 else 'red' for l in labels_per_subsequence]
+
+        plt.subplot(1, 2, 1)
+        plt.scatter(raw_data_2d[:, 0], raw_data_2d[:, 1], c=colors, label='Raw Data', alpha=0.4)
+        plt.title('Raw Data Embeddings')
+
+        plt.subplot(1, 2, 2)
+        plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, label='Embedded Data', alpha=0.4)
+        plt.title('Embedded Data')
+
+        plt.savefig(f"{batch_idx}.png")
+
+        plt.close()
+        
 
     def process(self, series, labels=None):
         all_scores, offset = [], 0
 
-        print(f"Starting processing of the time series with length {len(series)} and shape {np.array(series).shape}.")
+        print(f"Starting processing time series with length {len(series)} and shape {np.array(series).shape}.")
 
         batches = self.split_batches(series)
         labels_per_batch = self.split_batches(labels)
         slidingWindow = find_length(batches[0])
+        print(f"Sliding windows are set to length {slidingWindow}")
 
         # I had to set the sliding window length to the first batch's length
         # because if using `find_length(series)` for each batch, it might return different lengths in each batch
         # this sounds more reasonable than using the first batch's length, but with the current implementation
         # we had inconsistent lengths when concatenating with the previous state. If time we might want to debug this.
-        self.window_length = slidingWindow
+        # self.window_length = slidingWindow
+        self.window_length = 20
 
         for batch_idx, batch in enumerate(batches):
-            # print()
-            # print(f"Processing batch {batch_idx + 1}/{len(batches)} with {len(batch)} data points.")
-            # print(f"Processing batch with {len(batch)} data points and shape {np.array(batch).shape}.")
-            # Extract new subsequences
-            subseqs, times = self.extract_subsequences(batch, t0=offset, overlap=1)
-            labels_per_subsequence, _ = self.extract_subsequences(labels_per_batch[batch_idx], t0=offset, overlap=1)
-            colors = ['blue' if sum(l) == 0 else 'red' for l in labels_per_subsequence]
-            # print(labels_per_subsequence)
-            # exit()
-            # X_data = Window(window=slidingWindow).convert(batch).to_numpy()
-            # print(f"Extracted {len(subseqs)} subsequences with shape {subseqs.shape}.")
-            # print(f"Extracted {len(X_data)} subsequences from the batch with shape {X_data.shape}.")
 
-            # print(f"Current state shape: {len(self.state_subseq)} x {len(self.state_subseq[0][1]) if self.state_subseq else 0}.")
+            print()
+            print(f"Working on batch {batch_idx} with {len(batch)} elements.")
+            
+            subseqs, times, running_indices = self.extract_subsequences(batch, t0=offset, overlap=1)
+            labels_per_subsequence, _, _ = self.extract_subsequences(labels_per_batch[batch_idx], t0=offset, overlap=1)
+
+            print(f"Extracted {len(subseqs)} from current batch with shape {len(subseqs)} x {len(subseqs[0])}")
+
+            # data of current batch in the form (times, running_indices, subseqs) to match state representation
+            data_of_current_batch = list(zip(times.tolist(), running_indices, subseqs, labels_per_subsequence))
+            
             # Combine with retained state
-            combined = self.state_subseq + list(zip(times.tolist(), subseqs))
-            # print(f"Combined subsequences with retained state. Total subsequences: {len(combined)}.")
-            combined_times = np.array([t for t, _ in combined])
-            combined_seqs  = np.stack([s for _, s in combined])
+            combined = self.state_subseq + data_of_current_batch
+            print(f"Successfully combined data of current batch with state. Combined has {len(combined)} entries")
 
-            raw_data = np.concatenate((np.array(times).reshape(-1, 1), subseqs), axis=1)
-            # print(raw_data[0])
-            # lower_dim = PCA(n_components=2)
-            lower_dim = TSNE(random_state=22, max_iter=10000, metric="cosine")
-            scaler = StandardScaler()
-
-            # Fit and transform
-            raw_data_2d = scaler.fit_transform(
-                lower_dim.fit_transform(scaler.fit_transform(raw_data)),
-            )
-
+            # concatenate horizontally the running indices with the subsequence values to give TabPFN the sense of time
+            raw_data = self.get_enriched_subsequences(combined)
+            print(f"Successfully extracted enriched subsequences of shape {raw_data.shape}")
+            raw_data_labels = self.get_labels(combined)
+            print(f"Successfully extracted raw data labels of shape {raw_data_labels.shape}")
+            # exit()  
             # Embed subsequences and preserve mapping to original subsequences
-            embeddings = self.embed(np.concatenate((subseqs, np.array(times).reshape(-1, 1)), axis=1))
-            embeddings_2d = scaler.fit_transform(
-                lower_dim.fit_transform(scaler.fit_transform(embeddings)),
-            )
-
-            plt.figure(figsize=(12, 6))
-
-            plt.subplot(1, 2, 1)
-            plt.scatter(raw_data_2d[:, 0], raw_data_2d[:, 1], c=colors, label='Raw Data', alpha=0.4)
-            plt.title('Raw Data Embeddings')
-
-            plt.subplot(1, 2, 2)
-            plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, label='Embedded Data', alpha=0.4)
-            plt.title('Embedded Data')
-
-            plt.show()
-
-            plt.close()
+            embeddings = self.embed(self.get_enriched_subsequences(combined))
+            self.plot_raw_vs_latent_space_2D(raw_data, embeddings, raw_data_labels, batch_idx)
+            
 
             # Cluster with KMeans on normalized embeddings (equivalent to cosine k-means)
             # Note that embed() returns already z-normalized embeddings
@@ -192,10 +227,10 @@ class StreamingDetector:
             for c in range(self.n_clusters):
                 idx = np.where(labels == c)[0]
                 sizes[c] = len(idx)
-                ages[c]  = np.median(combined_times[idx])
+                ages[c]  = np.median(self.get_times(combined)[idx])
 
                 # Fit anomaly detection on all subsequences in this cluster
-                subseqs_cluster = np.stack([combined_seqs[i] for i in idx])
+                subseqs_cluster = np.stack([self.get_subsequences(combined)[i] for i in idx])
                 # print(f"Shape of subsequences in cluster {c+1}: {subseqs_cluster.shape}")
                 # print(f"Shape of raveled subsequences in cluster {c+1}: {subseqs_cluster.ravel().shape}")
                 # exit()
@@ -248,7 +283,7 @@ class StreamingDetector:
             all_scores.append(agg_subseq_scores)
 
             # Update state and offset
-            self.update_state(list(zip(times.tolist(), subseqs)))
+            self.update_state(data_of_current_batch)
             offset += len(batch)
 
         return np.concatenate(all_scores)
