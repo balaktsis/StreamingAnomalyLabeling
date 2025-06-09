@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: postgres
+    restart: always
+    ports:
+      - $POSTGRES_MAPPED_PORT:5432  # Map container port to host port
+    env_file:
+      - .env
+    volumes:
+      - ./database/postgres_data/:/var/lib/postgresql/data  # Persist data to a named volume
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql  # Mount the init script from the host machine inside the container
+
+  adminer:
+    image: adminer:5.3.0-standalone
+    container_name: adminer
+    restart: always
+    depends_on:
+      - postgres
+    ports:
+      - $ADMINER_MAPPED_PORT:8080
