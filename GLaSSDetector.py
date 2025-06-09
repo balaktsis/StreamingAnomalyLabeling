@@ -5,13 +5,15 @@ import matplotlib.pyplot as plt
 import math
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
-from TSB_UAD.models.matrix_profile import MatrixProfile
+from TSB_UAD.models.lof import LOF
 from TSB_UAD.utils.slidingWindows import find_length
 from TSB_UAD.models.iforest import IForest
 from sklearn.preprocessing import StandardScaler
 
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+
+from experiment_configs import IFOREST_NAME, LOF_NAME
 
 
 # Generalized Latent Space Streaming Detector (GLaSS Detector)
@@ -36,7 +38,7 @@ class GLaSSDetector(ABC):
         self._max_sliding_window_length = max_sliding_window_length
         self.model = model
         self.state_subseq = []  # [(timestamp, running_indices, subseq, labels)]
-        self._decision_scores = None  # Placeholder for decision scores
+        self.decision_scores_ = None  # Placeholder for decision scores
 
     @property
     def max_batch_size(self):
@@ -45,24 +47,6 @@ class GLaSSDetector(ABC):
     @property
     def max_sliding_window_length(self):
         return self._max_sliding_window_length
-
-    @property
-    def decision_scores_(self):
-        """
-        Getter for decision scores.
-        This is a placeholder to ensure compatibility with the TSB_UAD interface.
-        """
-        if self._decision_scores is None:
-            raise ValueError("Decision scores have not been set yet. Call the `process` method first to compute them.")
-        return self._decision_scores
-
-    @decision_scores_.setter
-    def decision_scores_(self, value):
-        """
-        Setter for decision scores.
-        This is a placeholder to ensure compatibility with the TSB_UAD interface.
-        """
-        self._decision_scores_ = value
 
     def split_batches(self, series):
         """
@@ -184,17 +168,21 @@ class GLaSSDetector(ABC):
         plt.close()
 
     def get_anomaly_scores(self, cluster_subseqs=None, batch_subseqs=None, batch=None):
-        if self.model == "iforest":
-            clf = IForest(n_jobs=1)
+        if self.model == IFOREST_NAME:
+            clf = IForest(n_jobs=-1)
             clf.fit(cluster_subseqs)
             raw_scores = clf.detector_.decision_function(batch_subseqs)
-        elif self.model == "matrixprofile":
-            clf = MatrixProfile(window=self.window_length)
-            clf.fit(batch)
-            raw_scores = clf.decision_scores_
+        elif self.model == LOF_NAME:
+            # Due to incompatibilities in Python (sklearn) version, we concatenate the cluster subsequences
+            # with the batch subsequences to fit the LOF model. Then we keep only the scores for the batch subsequences.
+            clf = LOF(n_neighbors=20, n_jobs=-1)
+            clf.fit(np.concatenate((cluster_subseqs, batch_subseqs), axis=0))
+            raw_scores = clf.decision_scores_[-len(batch_subseqs):]
         else:
             raise ValueError(
                 f"Unknown model: {self.model}. Supported models are 'iforest' and 'matrixprofile'.")
+        return raw_scores
+
 
     def process(self, series, labels=None):
         all_scores, offset = [], 0
@@ -256,12 +244,8 @@ class GLaSSDetector(ABC):
                 # Fit anomaly detection on all subsequences in this cluster
                 subseqs_cluster = np.stack([self.get_subsequences(combined)[i] for i in idx])
 
-                raw_scores = self.get_anomaly_scores(subseqs_cluster, batch)
-
-                # Get decision scores for all the subsequences of the current batch (and not only this cluster)
+                raw_scores = self.get_anomaly_scores(subseqs_cluster, subseqs)
                 scores_for_current_batch_from_submodel = MinMaxScaler().fit_transform(
-                    # using the private attribute `detector_` because `check_fitted` seems broken in TSB's model
-                    # When using `clf.decision_function(subseqs)`, it raises an error that the model is not fitted
                     raw_scores.reshape(-1, 1)
                 ).ravel()
 

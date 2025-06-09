@@ -52,7 +52,7 @@ def insert_experiment_result(result: dict):
         cursor.close()
         conn.close()
 
-def experiment_exists(files: list[str], method_name: str, tag: str):
+def experiment_exists(files: list[str], method_name: str, tag: str, extra_info: dict = None) -> bool:
     """
     Checks if an experiment with the given files, method name, and tag already exists in the database.
 
@@ -68,11 +68,20 @@ def experiment_exists(files: list[str], method_name: str, tag: str):
         SELECT EXISTS (
             SELECT 1 FROM experiments
             WHERE files = %s AND method_name = %s AND tag = %s
-        )
     """
+    values = (json.dumps(files), method_name, tag)
 
-    cursor.execute(query, (json.dumps(files), method_name, tag))
+    if extra_info:
+        query += " AND extra_info = %s"
+        values = (*values, json.dumps(extra_info))
+
+    query += ")" # closing the EXISTS clause
+
+    cursor.execute(query, values)
     exists = cursor.fetchone()[0]
+
+    if exists:
+        print("Experiment already exists in the database.")
 
     cursor.close()
     return exists

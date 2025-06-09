@@ -1,9 +1,5 @@
 from GLaSSDetector import GLaSSDetector
 
-import numpy as np
-from tabpfn import TabPFNRegressor
-from tabpfn_extensions.embedding import TabPFNEmbedding
-
 
 # Generalized Latent Space Streaming Detector (GLaSSDetector)
 class PCAGLaSSDetector(GLaSSDetector):
@@ -24,8 +20,6 @@ class PCAGLaSSDetector(GLaSSDetector):
             random_state=random_state,
             model=model,
             state_size=state_size,
-            max_batch_size=self.max_batch_size,
-            max_sliding_window_length=self.max_sliding_window_length,
         )
         self.n_dimensions = n_dimensions
 
@@ -34,7 +28,7 @@ class PCAGLaSSDetector(GLaSSDetector):
         from sklearn.decomposition import PCA
         from sklearn.preprocessing import StandardScaler
 
-        lower_dim = PCA(n_components=2)
+        lower_dim = PCA(n_components=self.n_dimensions)
         scaler = StandardScaler()
 
         # Fit and transform

@@ -1,23 +1,19 @@
 import random
-import os
 import time
 import json
 import warnings; warnings.simplefilter(action='ignore', category=FutureWarning)
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import math
 from sklearn.preprocessing import MinMaxScaler
-from TSB_UAD.utils.visualisation import plotFig
 from TSB_UAD.utils.slidingWindows import find_length
 from TSB_UAD.models.feature import Window
 from TSB_UAD.models.iforest import IForest
 from TSB_UAD.models.lof import LOF
 from TSB_UAD.vus.metrics import get_metrics
 from TSB_UAD.models.sand import SAND
-from TSB_UAD.models.matrix_profile import MatrixProfile
 
-from StreamingDetector import StreamingDetector
+from PCAGLaSSDetector import PCAGLaSSDetector
 from experiment_generator import experiments_generator
 from db_utils import experiment_exists, insert_experiment_result
 from experiment_configs import IFOREST_NAME, LOF_NAME, SAND_NAME, OFFLINE_TAG, BATCH_TAG, ONLINE_TAG
@@ -150,7 +146,7 @@ for experiment_idx, experiment_files in enumerate(experiments):
         start = time.time()
         for i, batch in enumerate(batches):
             X_data = Window(window=slidingWindow).convert(batch).to_numpy()
-            clf = IForest(n_jobs=1)
+            clf = IForest(n_jobs=-1)
             clf.fit(X_data)
             score = clf.decision_scores_
             score = MinMaxScaler(feature_range=(0,1)).fit_transform(score.reshape(-1,1)).ravel()
@@ -181,7 +177,7 @@ for experiment_idx, experiment_files in enumerate(experiments):
         start = time.time()
         for i, batch in enumerate(batches):
             X_data = Window(window=slidingWindow).convert(batch).to_numpy()
-            clf = LOF(n_neighbors=20, n_jobs=1)
+            clf = LOF(n_neighbors=20, n_jobs=-1)
             clf.fit(X_data)
             score = clf.decision_scores_
             score = MinMaxScaler(feature_range=(0, 1)).fit_transform(score.reshape(-1, 1)).ravel()
@@ -227,3 +223,77 @@ for experiment_idx, experiment_files in enumerate(experiments):
             **metrics,
         }
         insert_experiment_result(result)
+
+    for n_clusters in [10, 20, 40, 80]:
+        for state_size in [1000, 3000, 5000]:
+            for n_dimensions in [2, 3]:
+                extra_info = {
+                    'n_clusters': n_clusters,
+                    'state_size': state_size,
+                    'n_dimensions': n_dimensions,
+                }
+
+                ### Online 1 - IForest with PCA
+                modelName = IFOREST_NAME + "_PCA"
+                tag = ONLINE_TAG
+                if not experiment_exists(experiment_files, modelName, tag, extra_info):
+                    clf = PCAGLaSSDetector(
+                        batch_frac=0.1,
+                        window_length= slidingWindow,
+                        overlap=1,
+                        n_clusters=n_clusters,
+                        state_size=state_size,
+                        model = IFOREST_NAME,
+                        n_dimensions=n_dimensions,
+                    )
+                    start = time.time()
+                    clf.process(data, labels)
+                    end = time.time()
+                    score = clf.decision_scores_
+                    score = MinMaxScaler(feature_range=(0, 1)).fit_transform(score.reshape(-1, 1)).ravel()
+                    metrics = get_metrics(score, labels)
+                    result = {
+                        'normality_levels': normality_levels,
+                        'files': json.dumps(experiment_files),
+                        'series_length': series_length,
+                        'nof_anomalies': nof_anomalies,
+                        'method_name': modelName,
+                        'tag': tag,
+                        'execution_time': end - start,
+                        'extra_info': json.dumps(extra_info),
+                        **metrics,
+                    }
+                    insert_experiment_result(result)
+
+                ### Online 2 - LOF with PCA
+                modelName = LOF_NAME + "_PCA"
+                tag = ONLINE_TAG
+                if not experiment_exists(experiment_files, modelName, tag, extra_info):
+                    clf = PCAGLaSSDetector(
+                        batch_frac=0.1,
+                        window_length=slidingWindow,
+                        overlap=1,
+                        n_clusters=n_clusters,
+                        state_size=state_size,
+                        model=LOF_NAME,
+                        n_dimensions=n_dimensions,
+                    )
+                    start = time.time()
+                    clf.process(data, labels)
+                    end = time.time()
+                    score = clf.decision_scores_
+                    score = MinMaxScaler(feature_range=(0, 1)).fit_transform(score.reshape(-1, 1)).ravel()
+                    metrics = get_metrics(score, labels)
+                    result = {
+                        'normality_levels': normality_levels,
+                        'files': json.dumps(experiment_files),
+                        'series_length': series_length,
+                        'nof_anomalies': nof_anomalies,
+                        'method_name': modelName,
+                        'tag': tag,
+                        'execution_time': end - start,
+                        'extra_info': json.dumps(extra_info),
+                        **metrics,
+                    }
+                    insert_experiment_result(result)
+
