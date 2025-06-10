@@ -1,6 +1,6 @@
 # SALT: Streaming Anomaly Labeling for Time series
 ## Overview
-SALT (Streaming Anomaly Labeling for Time Series) is a clustering-based approach for detecting anomalies in streaming time series data. Inspired by SAND (Boniol et al., 2021), SALT leverages latent space representations and probabilistic sampling to handle concept drift and real-time constraints efficiently. The method is designed to work with algorithms like Isolation Forest (IForest) and Local Outlier Factor (LOF), providing flexibility and robustness in anomaly detection.
+SALT (Streaming Anomaly Labeling for Time Series) is a clustering-based approach for detecting anomalies in streaming time series data. SALT leverages latent space representations and probabilistic sampling to handle concept drift and real-time constraints efficiently. The method is designed to work with algorithms like Isolation Forest (IForest) and Local Outlier Factor (LOF), providing flexibility and robustness in anomaly detection.
 
 ## Key Features
 - History-aware: Maintains a state of historical subsequences to capture evolving patterns.
