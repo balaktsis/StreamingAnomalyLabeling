@@ -55,75 +55,74 @@ for experiment_idx, experiment_files in enumerate(experiments):
 
     slidingWindow = find_length(data)
 
-    for n_clusters in [10, 20, 40, 80]:
-        for state_size in [1000, 3000, 5000]:
-            for n_dimensions in [2, 3]:
-                extra_info = {
-                    'n_clusters': n_clusters,
-                    'state_size': state_size,
+    for n_clusters in [10, 20]:
+        for state_size in [1000, 4000]:
+            extra_info = {
+                'n_clusters': n_clusters,
+                'state_size': state_size,
+            }
+
+            ### Online 1 - IForest with TabPFN
+            modelName = IFOREST_NAME + "_TabPFN"
+            tag = ONLINE_TAG
+            if not experiment_exists(experiment_files, modelName, tag, extra_info):
+                clf = TabPFNGLaSSDetector(
+                    batch_frac=0.1,
+                    window_length=slidingWindow,
+                    overlap=1,
+                    n_clusters=n_clusters,
+                    state_size=state_size,
+                    model=IFOREST_NAME,
+                    tabpfn_device='cuda',
+                )
+                start = time.time()
+                clf.process(data, labels)
+                end = time.time()
+                score = clf.decision_scores_
+                score = MinMaxScaler(feature_range=(0, 1)).fit_transform(score.reshape(-1, 1)).ravel()
+                metrics = get_metrics(score, labels)
+                result = {
+                    'normality_levels': normality_levels,
+                    'files': json.dumps(experiment_files),
+                    'series_length': series_length,
+                    'nof_anomalies': nof_anomalies,
+                    'method_name': modelName,
+                    'tag': tag,
+                    'execution_time': end - start,
+                    'extra_info': json.dumps(extra_info),
+                    **metrics,
                 }
+                insert_experiment_result(result)
 
-                ### Online 1 - IForest with TabPFN
-                modelName = IFOREST_NAME + "_TabPFN"
-                tag = ONLINE_TAG
-                if not experiment_exists(experiment_files, modelName, tag, extra_info):
-                    clf = TabPFNGLaSSDetector(
-                        batch_frac=0.1,
-                        window_length=slidingWindow,
-                        overlap=1,
-                        n_clusters=n_clusters,
-                        state_size=state_size,
-                        model=IFOREST_NAME,
-                        tabpfn_device='cuda',
-                    )
-                    start = time.time()
-                    clf.process(data, labels)
-                    end = time.time()
-                    score = clf.decision_scores_
-                    score = MinMaxScaler(feature_range=(0, 1)).fit_transform(score.reshape(-1, 1)).ravel()
-                    metrics = get_metrics(score, labels)
-                    result = {
-                        'normality_levels': normality_levels,
-                        'files': json.dumps(experiment_files),
-                        'series_length': series_length,
-                        'nof_anomalies': nof_anomalies,
-                        'method_name': modelName,
-                        'tag': tag,
-                        'execution_time': end - start,
-                        'extra_info': json.dumps(extra_info),
-                        **metrics,
-                    }
-                    insert_experiment_result(result)
-
-                ### Online 2 - IForest with TabPFN
-                modelName = LOF_NAME + "_TabPFN"
-                tag = ONLINE_TAG
-                if not experiment_exists(experiment_files, modelName, tag, extra_info):
-                    clf = TabPFNGLaSSDetector(
-                        batch_frac=0.1,
-                        window_length=slidingWindow,
-                        overlap=1,
-                        n_clusters=n_clusters,
-                        state_size=state_size,
-                        model=LOF_NAME,
-                        tabpfn_device='cuda',
-                    )
-                    start = time.time()
-                    clf.process(data, labels)
-                    end = time.time()
-                    score = clf.decision_scores_
-                    score = MinMaxScaler(feature_range=(0, 1)).fit_transform(score.reshape(-1, 1)).ravel()
-                    metrics = get_metrics(score, labels)
-                    result = {
-                        'normality_levels': normality_levels,
-                        'files': json.dumps(experiment_files),
-                        'series_length': series_length,
-                        'nof_anomalies': nof_anomalies,
-                        'method_name': modelName,
-                        'tag': tag,
-                        'execution_time': end - start,
-                        'extra_info': json.dumps(extra_info),
-                        **metrics,
-                    }
-                    insert_experiment_result(result)
+            ### Online 2 - IForest with TabPFN
+            modelName = LOF_NAME + "_TabPFN"
+            tag = ONLINE_TAG
+            if not experiment_exists(experiment_files, modelName, tag, extra_info):
+                clf = TabPFNGLaSSDetector(
+                    batch_frac=0.1,
+                    window_length=slidingWindow,
+                    overlap=1,
+                    n_clusters=n_clusters,
+                    state_size=state_size,
+                    model=LOF_NAME,
+                    tabpfn_device='cuda',
+                )
+                start = time.time()
+                clf.process(data, labels)
+                end = time.time()
+                score = clf.decision_scores_
+                score = MinMaxScaler(feature_range=(0, 1)).fit_transform(score.reshape(-1, 1)).ravel()
+                metrics = get_metrics(score, labels)
+                result = {
+                    'normality_levels': normality_levels,
+                    'files': json.dumps(experiment_files),
+                    'series_length': series_length,
+                    'nof_anomalies': nof_anomalies,
+                    'method_name': modelName,
+                    'tag': tag,
+                    'execution_time': end - start,
+                    'extra_info': json.dumps(extra_info),
+                    **metrics,
+                }
+                insert_experiment_result(result)
 
