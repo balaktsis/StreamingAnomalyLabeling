@@ -35,6 +35,7 @@ experiments = experiments_generator(
     random_seed=random_seed
 )
 
+random.seed(None)
 random.shuffle(experiments) # shuffling for executing from multiple devices in parallel
 
 for experiment_idx, experiment_files in enumerate(experiments):
